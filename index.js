@@ -118,7 +118,7 @@ app.patch("/studio-explore/:id", async (req, res) => {
 /* ---------- DELETE ---------- */
 app.delete("/studio-explore/:id", async (req, res) => {
   try {
-    const result = await studioCollection.deleteOne({
+    const result = await studioCollection.deleteOne({git init
       _id: new ObjectId(req.params.id),
     });
 
@@ -136,6 +136,4 @@ app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`);
-});
+
