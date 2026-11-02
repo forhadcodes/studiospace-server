@@ -24,6 +24,7 @@ export async function connectToMongoDB() {
 const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("studiospace");
 const studioCollection = db.collection("studio");
+const bookingCollection = db.collection("booking");
 
 // validate :id for every route that has it
 app.param("id", (req, res, next, id) => {
@@ -118,7 +119,7 @@ app.patch("/studio-explore/:id", async (req, res) => {
 /* ---------- DELETE ---------- */
 app.delete("/studio-explore/:id", async (req, res) => {
   try {
-    const result = await studioCollection.deleteOne({git init
+    const result = await studioCollection.deleteOne({
       _id: new ObjectId(req.params.id),
     });
 
@@ -129,6 +130,56 @@ app.delete("/studio-explore/:id", async (req, res) => {
   } catch (err) {
     console.error("DELETE /studio-explore/:id failed:", err);
     res.status(500).send({ message: "Failed to delete studio", error: err.message });
+  }
+});
+
+/* ---------- BOOKINGS ---------- */
+
+// Create a booking (called from BookingCard)
+app.post("/booking", async (req, res) => {
+  try {
+    const data = req.body;
+    const result = await bookingCollection.insertOne(data);
+    res.send(result);
+  } catch (err) {
+    console.error("POST /booking failed:", err);
+    res.status(500).send({ message: "Failed to save booking", error: err.message });
+  }
+});
+
+app.get('/my-booking/:email', async (req, res) => {
+  const { email } = req.params;
+  const result = await bookingCollection.find({ email:email}).toArray();
+  res.send(result);
+})
+
+// Read bookings — pass ?email=... to get one user's bookings
+app.get("/booking", async (req, res) => {
+  try {
+    const { email } = req.query;
+    const filter = email ? { email } : {};
+    const result = await bookingCollection.find(filter).toArray();
+    res.send(result);
+  } catch (err) {
+    console.error("GET /booking failed:", err);
+    res.status(500).send({ message: "Failed to fetch bookings", error: err.message });
+  }
+});
+
+// Cancel (delete) a booking
+app.delete("/booking/:id", async (req, res) => {
+  try {
+    const result = await bookingCollection.deleteOne({
+      _id: new ObjectId(req.params.id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ message: "Booking not found" });
+    }
+    res.status(200).send(result);
+  } catch (err) {
+    console.error("DELETE /booking/:id failed:", err);
+    res.status(500).send({ message: "Failed to cancel booking", error: err.message });
   }
 });
 
