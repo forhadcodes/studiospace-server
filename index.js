@@ -26,9 +26,13 @@ const db = mongoClient.db("studiospace");
 const studioCollection = db.collection("studio");
 const bookingCollection = db.collection("booking");
 
-// validate :id for every route that has it
+// Allowed lifecycle values for a booking's status
+const BOOKING_STATUSES = ["Pending", "Confirmed", "Completed", "Cancelled"];
+
+// validate :id — allows both MongoDB ObjectIds (24 hex chars) and the
+// older booking documents whose _id is a studio slug (e.g. "the-art-attic")
 app.param("id", (req, res, next, id) => {
-  if (!/^[a-f\d]{24}$/i.test(id)) {
+  if (!/^(?:[a-f\d]{24}|[\w-]+)$/i.test(id)) {
     return res.status(400).send({ message: `Invalid id: ${id}` });
   }
   next();
@@ -138,7 +142,13 @@ app.delete("/studio-explore/:id", async (req, res) => {
 // Create a booking (called from BookingCard)
 app.post("/booking", async (req, res) => {
   try {
-    const data = req.body;
+    // Every new reservation starts as Pending unless a valid status is sent.
+    const data = {
+      ...req.body,
+      status: BOOKING_STATUSES.includes(req.body?.status)
+        ? req.body.status
+        : "Pending",
+    };
     const result = await bookingCollection.insertOne(data);
     res.send(result);
   } catch (err) {
@@ -166,12 +176,16 @@ app.get("/booking", async (req, res) => {
   }
 });
 
-// Cancel (delete) a booking
+// Cancel (delete) a booking — accepts generated ObjectIds
+// and the older booking ids that are plain studio slugs
 app.delete("/booking/:id", async (req, res) => {
   try {
-    const result = await bookingCollection.deleteOne({
-      _id: new ObjectId(req.params.id),
-    });
+    const id = req.params.id;
+    const filter = /^[a-f\d]{24}$/i.test(id)
+      ? { _id: new ObjectId(id) }
+      : { _id: id };
+
+    const result = await bookingCollection.deleteOne(filter);
 
     if (result.deletedCount === 0) {
       return res.status(404).send({ message: "Booking not found" });
@@ -180,6 +194,33 @@ app.delete("/booking/:id", async (req, res) => {
   } catch (err) {
     console.error("DELETE /booking/:id failed:", err);
     res.status(500).send({ message: "Failed to cancel booking", error: err.message });
+  }
+});
+
+// Update a booking's status (e.g. Cancel / Cancel Booking)
+app.patch("/booking/:id", async (req, res) => {
+  try {
+    const status = req.body?.status;
+    if (!BOOKING_STATUSES.includes(status)) {
+      return res.status(400).send({ message: `Invalid status: ${status}` });
+    }
+
+    const id = req.params.id;
+    const filter = /^[a-f\d]{24}$/i.test(id)
+      ? { _id: new ObjectId(id) }
+      : { _id: id };
+
+    const result = await bookingCollection.updateOne(filter, {
+      $set: { status },
+    });
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "Booking not found" });
+    }
+    res.status(200).send(result);
+  } catch (err) {
+    console.error("PATCH /booking/:id failed:", err);
+    res.status(500).send({ message: "Failed to update booking", error: err.message });
   }
 });
 
