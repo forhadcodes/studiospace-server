@@ -76,7 +76,21 @@ app.get("/studio-explore", async (req, res) => {
 });
 
 /* ---------- READ ONE ---------- */
-app.get("/studio-explore/:id", async (req, res) => {
+app.get("/studio-explore/:id", 
+  (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    console.log("Authorization header:", authHeader);
+    if (authHeader ! == "user logged in") {
+      return res.status(401).send({ message: "Unauthorized" });
+    }
+    next();
+  }
+  
+  
+  
+  
+  
+  async (req, res) => {
   try {
     const result = await studioCollection.findOne({
       _id: new ObjectId(req.params.id),
