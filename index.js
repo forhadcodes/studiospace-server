@@ -2,6 +2,7 @@ import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
 import cors from "cors";
+import { createRemoteJWKSet } from "jose";
 
 const app = express();
 const port = 5000;
@@ -25,6 +26,30 @@ const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("studiospace");
 const studioCollection = db.collection("studio");
 const bookingCollection = db.collection("booking");
+
+
+const verifyToken =  async (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    console.log("Authorization header:", authHeader);
+    if (authHeader != "user logged in") {
+      return res.status(401).send({ message: "Unauthorized" });
+    }
+    const token = authHeader.split(" ")[1];
+    if (!token) {
+      return res.status(401).send({ message: "Unauthorized" });
+    } 
+    const JWKS = createRemoteJWKSet(new URL('http://localhost:3000/api/auth/jwks'))
+try {
+    const { payload } = await jwtVerify(token, JWKS);
+    }
+    catch (err) {
+      console.error("JWT verification failed:", err);
+      return res.status(401).send({ message: "Server Error" });
+    }    
+
+
+    next();
+  }
 
 // Allowed lifecycle values for a booking's status
 const BOOKING_STATUSES = ["Pending", "Confirmed", "Completed", "Cancelled"];
@@ -77,19 +102,7 @@ app.get("/studio-explore", async (req, res) => {
 
 /* ---------- READ ONE ---------- */
 app.get("/studio-explore/:id", 
-  (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    console.log("Authorization header:", authHeader);
-    if (authHeader ! == "user logged in") {
-      return res.status(401).send({ message: "Unauthorized" });
-    }
-    next();
-  }
-  
-  
-  
-  
-  
+ verifyToken, 
   async (req, res) => {
   try {
     const result = await studioCollection.findOne({
