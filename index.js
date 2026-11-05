@@ -2,12 +2,42 @@ import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
 import cors from "cors";
-import { createRemoteJWKSet } from "jose";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const app = express();
 const port = 5000;
 
-app.use(cors());
+/** Next.js app that issues the JWT (better-auth) and serves /api/auth/jwks. */
+const APP_URL = (process.env.BETTER_AUTH_URL ?? `${process.env.CLIENT_URL}`).replace(
+  /\/+$/,
+  ""
+);
+/** Must match the HTTPOnly cookie set by `POST /api/auth/jwt` in the Next app. */
+const JWT_COOKIE_NAME = "studiospace_jwt";
+
+const JWKS = createRemoteJWKSet(new URL("/api/auth/jwks", APP_URL));
+
+// The browser only sends the HTTPOnly JWT cookie when the allowed origin is
+// echoed back (never "*") and credentials are enabled.
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+const EXTRA_ORIGINS = (process.env.APP_ORIGINS ?? "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // No Origin header (curl, server-to-server) is always allowed.
+      if (!origin) return callback(null, true);
+      if (LOCAL_ORIGIN.test(origin) || EXTRA_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(null, false);
+    },
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 const client = new MongoClient(process.env.MONGODB_URI);
@@ -28,28 +58,64 @@ const studioCollection = db.collection("studio");
 const bookingCollection = db.collection("booking");
 
 
-const verifyToken =  async (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    console.log("Authorization header:", authHeader);
-    if (authHeader != "user logged in") {
-      return res.status(401).send({ message: "Unauthorized" });
-    }
-    const token = authHeader.split(" ")[1];
-    if (!token) {
-      return res.status(401).send({ message: "Unauthorized" });
-    } 
-    const JWKS = createRemoteJWKSet(new URL('http://localhost:3000/api/auth/jwks'))
-try {
-    const { payload } = await jwtVerify(token, JWKS);
-    }
-    catch (err) {
-      console.error("JWT verification failed:", err);
-      return res.status(401).send({ message: "Server Error" });
-    }    
-
-
-    next();
+/** Reads the JWT from `Authorization: Bearer` or the HTTPOnly cookie. */
+function readToken(req) {
+  const header = req.headers.authorization;
+  if (typeof header === "string" && header.toLowerCase().startsWith("bearer ")) {
+    const bearer = header.slice("bearer ".length).trim();
+    if (bearer) return bearer;
   }
+
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return null;
+
+  for (const part of cookieHeader.split(";")) {
+    const [name, ...value] = part.trim().split("=");
+    if (name === JWT_COOKIE_NAME) {
+      const raw = value.join("=");
+      return raw ? decodeURIComponent(raw) : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Verifies the better-auth JWT on protected routes.
+ *
+ * The browser sends it as the HTTPOnly cookie set by the Next app; server-side
+ * callers (and curl/Postman) can send `Authorization: Bearer <jwt>`.
+ * Missing, tampered, or expired tokens are rejected with 401.
+ */
+export const verifyToken = async (req, res, next) => {
+  const token = readToken(req);
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized" });
+  }
+
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: APP_URL,
+      audience: APP_URL,
+    });
+
+    if (!payload?.sub || !payload.email) {
+      return res.status(401).send({ message: "Unauthorized" });
+    }
+
+    // Downstream handlers can trust this instead of the request body.
+    req.user = {
+      id: payload.sub,
+      email: payload.email,
+      name: payload.name ?? payload.email,
+      image: payload.image ?? null,
+    };
+
+    return next();
+  } catch (err) {
+    console.error("JWT verification failed:", err.code ?? err.message);
+    return res.status(401).send({ message: "Unauthorized" });
+  }
+};
 
 // Allowed lifecycle values for a booking's status
 const BOOKING_STATUSES = ["Pending", "Confirmed", "Completed", "Cancelled"];
@@ -79,7 +145,7 @@ const EDITABLE_FIELDS = [
 ];
 
 /* ---------- CREATE ---------- */
-app.post("/add-studio", async (req, res) => {
+app.post("/add-studio", verifyToken, async (req, res) => {
   try {
     const result = await studioCollection.insertOne(req.body);
     res.send(result);
@@ -120,7 +186,7 @@ app.get("/studio-explore/:id",
 });
 
 /* ---------- UPDATE (Edit) ---------- */
-app.patch("/studio-explore/:id", async (req, res) => {
+app.patch("/studio-explore/:id", verifyToken, async (req, res) => {
   try {
     const updateData = Object.fromEntries(
       Object.entries(req.body ?? {}).filter(([key]) =>
@@ -148,7 +214,7 @@ app.patch("/studio-explore/:id", async (req, res) => {
 });
 
 /* ---------- DELETE ---------- */
-app.delete("/studio-explore/:id", async (req, res) => {
+app.delete("/studio-explore/:id", verifyToken, async (req, res) => {
   try {
     const result = await studioCollection.deleteOne({
       _id: new ObjectId(req.params.id),
@@ -167,7 +233,7 @@ app.delete("/studio-explore/:id", async (req, res) => {
 /* ---------- BOOKINGS ---------- */
 
 // Create a booking (called from BookingCard)
-app.post("/booking", async (req, res) => {
+app.post("/booking", verifyToken, async (req, res) => {
   try {
     // Every new reservation starts as Pending unless a valid status is sent.
     const data = {
@@ -205,7 +271,7 @@ app.get("/booking", async (req, res) => {
 
 // Cancel (delete) a booking — accepts generated ObjectIds
 // and the older booking ids that are plain studio slugs
-app.delete("/booking/:id", async (req, res) => {
+app.delete("/booking/:id", verifyToken, async (req, res) => {
   try {
     const id = req.params.id;
     const filter = /^[a-f\d]{24}$/i.test(id)
@@ -225,7 +291,7 @@ app.delete("/booking/:id", async (req, res) => {
 });
 
 // Update a booking's status (e.g. Cancel / Cancel Booking)
-app.patch("/booking/:id", async (req, res) => {
+app.patch("/booking/:id", verifyToken, async (req, res) => {
   try {
     const status = req.body?.status;
     if (!BOOKING_STATUSES.includes(status)) {
@@ -258,3 +324,5 @@ app.get("/", (req, res) => {
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
+
+export default app;
